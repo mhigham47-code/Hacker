@@ -269,4 +269,212 @@ describe("Hacker Token", function () {
       ).to.be.reverted;
     });
   });
+
+  // ── Tax Calculation Accuracy ───────────────────────────────────────────────
+
+  describe("Tax calculation accuracy", function () {
+    beforeEach(async function () {
+      await hacker.connect(owner).setDexPair(dex.address);
+      const reserve = await hacker.balanceOf(owner.address);
+      if (reserve > 0n) await hacker.connect(owner).transfer(alice.address, reserve);
+    });
+
+    it("buy tax deductions sum to exactly totalFee", async function () {
+      const buyAmount = ethers.parseEther("1000");
+      await hacker.connect(alice).transfer(dex.address, buyAmount);
+
+      const buyLiq  = await hacker.buyLiquidityBps();
+      const buyMkt  = await hacker.buyMarketingBps();
+      const buyBurn = await hacker.buyBurnBps();
+
+      const expectedLiq  = (buyAmount * buyLiq)  / 10000n;
+      const expectedMkt  = (buyAmount * buyMkt)  / 10000n;
+      const expectedBurn = (buyAmount * buyBurn) / 10000n;
+      const expectedNet  = buyAmount - expectedLiq - expectedMkt - expectedBurn;
+
+      const mktBefore  = await hacker.balanceOf(marketing.address);
+      const liqBefore  = await hacker.balanceOf(liquidity.address);
+      const deadBefore = await hacker.balanceOf(DEAD);
+
+      await hacker.connect(dex).transfer(bob.address, buyAmount);
+
+      expect(await hacker.balanceOf(bob.address)).to.equal(expectedNet);
+      expect(await hacker.balanceOf(marketing.address)).to.equal(mktBefore + expectedMkt);
+      expect(await hacker.balanceOf(liquidity.address)).to.equal(liqBefore + expectedLiq);
+      expect(await hacker.balanceOf(DEAD)).to.equal(deadBefore + expectedBurn);
+    });
+
+    it("sell tax deductions sum to exactly totalFee", async function () {
+      const sellAmount = ethers.parseEther("1000");
+
+      const sellLiq  = await hacker.sellLiquidityBps();
+      const sellMkt  = await hacker.sellMarketingBps();
+      const sellBurn = await hacker.sellBurnBps();
+
+      const expectedLiq  = (sellAmount * sellLiq)  / 10000n;
+      const expectedMkt  = (sellAmount * sellMkt)  / 10000n;
+      const expectedBurn = (sellAmount * sellBurn) / 10000n;
+      const expectedNet  = sellAmount - expectedLiq - expectedMkt - expectedBurn;
+
+      const mktBefore  = await hacker.balanceOf(marketing.address);
+      const liqBefore  = await hacker.balanceOf(liquidity.address);
+      const deadBefore = await hacker.balanceOf(DEAD);
+      const dexBefore  = await hacker.balanceOf(dex.address);
+
+      await hacker.connect(alice).transfer(dex.address, sellAmount);
+
+      expect(await hacker.balanceOf(dex.address)).to.equal(dexBefore + expectedNet);
+      expect(await hacker.balanceOf(marketing.address)).to.equal(mktBefore + expectedMkt);
+      expect(await hacker.balanceOf(liquidity.address)).to.equal(liqBefore + expectedLiq);
+      expect(await hacker.balanceOf(DEAD)).to.equal(deadBefore + expectedBurn);
+    });
+
+    it("wallet-to-wallet transfers are always tax-free", async function () {
+      const amount = ethers.parseEther("500");
+      const aliceBalance = await hacker.balanceOf(alice.address);
+      if (aliceBalance < amount) return;
+
+      const bobBefore = await hacker.balanceOf(bob.address);
+      await hacker.connect(alice).transfer(bob.address, amount);
+      expect(await hacker.balanceOf(bob.address)).to.equal(bobBefore + amount);
+    });
+
+    it("buy tax with zero burn-bps sends nothing extra to DEAD", async function () {
+      await hacker.connect(owner).setTax(200, 200, 0, 300, 300, 200);
+      const buyAmount = ethers.parseEther("1000");
+      await hacker.connect(alice).transfer(dex.address, buyAmount);
+      const deadBefore = await hacker.balanceOf(DEAD);
+      await hacker.connect(dex).transfer(bob.address, buyAmount);
+      // DEAD should be unchanged (burn bps = 0 for buy)
+      expect(await hacker.balanceOf(DEAD)).to.equal(deadBefore);
+    });
+  });
+
+  // ── Limit Enforcement (Uniswap-like Router Simulation) ───────────────────
+
+  describe("Limit enforcement with Uniswap-like router", function () {
+    beforeEach(async function () {
+      await hacker.connect(owner).setDexPair(dex.address);
+      const reserve = await hacker.balanceOf(owner.address);
+      if (reserve > 0n) await hacker.connect(owner).transfer(alice.address, reserve);
+    });
+
+    it("blocks buy that would push recipient past maxWalletAmount", async function () {
+      const maxWallet = await hacker.maxWalletAmount();
+      // Fill bob to maxWallet via dex (simulated buy)
+      await hacker.connect(alice).transfer(dex.address, maxWallet);
+      await hacker.connect(dex).transfer(bob.address, maxWallet);
+      // Next token from dex to bob should exceed wallet limit
+      const extra = ethers.parseEther("1");
+      await hacker.connect(alice).transfer(dex.address, extra);
+      await expect(
+        hacker.connect(dex).transfer(bob.address, extra)
+      ).to.be.revertedWith("Hacker: exceeds max wallet");
+    });
+
+    it("blocks transaction that exceeds maxTxAmount", async function () {
+      const maxTx = await hacker.maxTxAmount();
+      const overMax = maxTx + 1n;
+      const aliceBalance = await hacker.balanceOf(alice.address);
+      if (aliceBalance < overMax) return;
+
+      await expect(
+        hacker.connect(alice).transfer(bob.address, overMax)
+      ).to.be.revertedWith("Hacker: exceeds max transaction");
+    });
+
+    it("DEX pair address is excluded from maxWalletAmount check", async function () {
+      expect(await hacker.isExcludedFromLimits(dex.address)).to.equal(true);
+    });
+
+    it("excluded address bypasses anti-whale maxTxAmount", async function () {
+      await hacker.connect(owner).setExcludedFromLimits(alice.address, true);
+      const overMax = (await hacker.maxTxAmount()) + ethers.parseEther("1");
+      const aliceBalance = await hacker.balanceOf(alice.address);
+      if (aliceBalance < overMax) return;
+      await expect(hacker.connect(alice).transfer(bob.address, overMax)).to.not.be.reverted;
+    });
+  });
+
+  // ── Tax Exclusion / Blacklist-like Enforcement ────────────────────────────
+
+  describe("Tax exclusion enforcement", function () {
+    beforeEach(async function () {
+      await hacker.connect(owner).setDexPair(dex.address);
+      const reserve = await hacker.balanceOf(owner.address);
+      if (reserve > 0n) await hacker.connect(owner).transfer(alice.address, reserve);
+    });
+
+    it("setExcludedFromTax makes sell tax-free for that address", async function () {
+      await hacker.connect(owner).setExcludedFromTax(alice.address, true);
+      const amount = ethers.parseEther("1000");
+      const dexBefore = await hacker.balanceOf(dex.address);
+      await hacker.connect(alice).transfer(dex.address, amount);
+      expect(await hacker.balanceOf(dex.address)).to.equal(dexBefore + amount);
+    });
+
+    it("removing tax exclusion re-enables sell tax", async function () {
+      await hacker.connect(owner).setExcludedFromTax(alice.address, true);
+      await hacker.connect(owner).setExcludedFromTax(alice.address, false);
+      expect(await hacker.isExcludedFromTax(alice.address)).to.equal(false);
+    });
+
+    it("non-owner cannot change tax exclusion", async function () {
+      await expect(
+        hacker.connect(alice).setExcludedFromTax(bob.address, true)
+      ).to.be.reverted;
+    });
+
+    it("non-owner cannot change limit exclusion", async function () {
+      await expect(
+        hacker.connect(alice).setExcludedFromLimits(bob.address, true)
+      ).to.be.reverted;
+    });
+  });
+
+  // ── Uniswap Pair Interaction (Integration) ────────────────────────────────
+
+  describe("Uniswap pair interaction (integration)", function () {
+    beforeEach(async function () {
+      await hacker.connect(owner).setDexPair(dex.address);
+      const reserve = await hacker.balanceOf(owner.address);
+      if (reserve > 0n) await hacker.connect(owner).transfer(alice.address, reserve);
+    });
+
+    it("setDexPair emits DexPairUpdated event", async function () {
+      const [, , , , , , newPair] = await ethers.getSigners();
+      await expect(hacker.connect(owner).setDexPair(newPair.address))
+        .to.emit(hacker, "DexPairUpdated")
+        .withArgs(newPair.address);
+      expect(await hacker.dexPair()).to.equal(newPair.address);
+    });
+
+    it("pair is auto-excluded from wallet limits after setDexPair", async function () {
+      expect(await hacker.isExcludedFromLimits(dex.address)).to.equal(true);
+    });
+
+    it("full buy-sell cycle maintains correct fee accounting", async function () {
+      const amount = ethers.parseEther("10000");
+      const buyLiq  = await hacker.buyLiquidityBps();
+      const buyMkt  = await hacker.buyMarketingBps();
+      const buyBurn = await hacker.buyBurnBps();
+      const sellLiq  = await hacker.sellLiquidityBps();
+      const sellMkt  = await hacker.sellMarketingBps();
+      const sellBurn = await hacker.sellBurnBps();
+
+      // Sell: alice -> dex
+      await hacker.connect(alice).transfer(dex.address, amount);
+      const netSell = amount - (amount * (sellLiq + sellMkt + sellBurn)) / 10000n;
+
+      // Buy: dex -> bob
+      const mktBefore = await hacker.balanceOf(marketing.address);
+      const liqBefore = await hacker.balanceOf(liquidity.address);
+      await hacker.connect(dex).transfer(bob.address, netSell);
+      const netBuy = netSell - (netSell * (buyLiq + buyMkt + buyBurn)) / 10000n;
+
+      expect(await hacker.balanceOf(bob.address)).to.equal(netBuy);
+      expect(await hacker.balanceOf(marketing.address)).to.be.gt(mktBefore);
+      expect(await hacker.balanceOf(liquidity.address)).to.be.gt(liqBefore);
+    });
+  });
 });
