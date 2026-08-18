@@ -63,7 +63,104 @@ Expected: Contract compiles with 0 errors
 
 ## **Phase 2: Deploy Contract** 🚀
 
-### Step 2.1: Deploy to Sepolia
+### Step 2.0: Verify Your Setup (Recommended)
+
+Before deploying, confirm everything is configured correctly:
+
+```bash
+npm run verify-sepolia-setup
+```
+
+**Expected output (all green):**
+```
+✅  .env file found
+✅  Deployer private key is set
+✅  Sepolia RPC URL: https://...
+✅  Marketing wallet: 0x...
+✅  Team wallet: 0x...
+✅  Liquidity wallet: 0x...
+✅  RPC endpoint is reachable and on Sepolia (chain ID 0xaa36a7)
+✅  Deployer 0x... has 0.123456 ETH (sufficient for deployment)
+
+✅  All 4 checks passed – you are ready to deploy!
+```
+
+If any check fails, the script explains the fix inline.
+
+### Step 2.1: Interactive Deployment (Recommended)
+
+The interactive deployer guides you step-by-step, estimates gas costs, and asks for confirmation before spending any ETH:
+
+```bash
+npm run deploy-sepolia-interactive
+```
+
+**What it does:**
+1. 📝 Prompts for any missing environment variables
+2. 💰 Verifies deployer has sufficient Sepolia ETH
+3. 📋 Shows deployment summary + estimated gas cost
+4. ❓ Asks for confirmation before proceeding
+5. 🔄 Deploys with real-time progress indicators
+6. 💾 Saves deployment info to `deployments/sepolia_<timestamp>.json`
+7. 📌 Displays transaction hash and next steps
+
+**Sample output:**
+```
+╔══════════════════════════════════════════════════════════╗
+║      🚀  Hacker Token – Sepolia Interactive Deployer     ║
+╚══════════════════════════════════════════════════════════╝
+
+📝  Step 1/5 – Environment Variables
+✅  All environment variables collected.
+
+💰  Step 2/5 – Wallet Balance Check
+   Deployer address : 0xYourAddress
+   Sepolia ETH      : 0.123456 ETH
+✅  Balance is sufficient for deployment.
+
+📋  Step 3/5 – Deployment Summary
+   Contract        : Hacker (HACK) – 1 000 000 000 000 supply
+   Network         : Sepolia Testnet
+   Deployer        : 0xYourAddress
+   Gas estimate    : 2,500,000 units
+   Estimated cost  : ~0.005000 ETH (at current gas price)
+
+❓  Deploy now? (yes/no): yes
+
+🔄  Step 4/5 – Deploying Contract…
+   Transaction hash: 0x...
+   ⏳  Waiting for confirmation…
+✅  Contract deployed!
+   Contract address: 0x<CONTRACT_ADDRESS>
+   Block number    : 12345678
+
+💾  Step 5/5 – Saving Deployment Record…
+   Saved to: deployments/sepolia_2024-01-01T00-00-00-000Z.json
+```
+
+**Deployment record (`deployments/sepolia_<timestamp>.json`):**
+```json
+{
+  "network": "sepolia",
+  "contractAddress": "0x<CONTRACT_ADDRESS>",
+  "deployerAddress": "0x...",
+  "marketingWallet": "0x...",
+  "teamWallet": "0x...",
+  "liquidityWallet": "0x...",
+  "transactionHash": "0x...",
+  "blockNumber": 12345678,
+  "gasUsed": "2500000",
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+**View on Etherscan:**
+```
+https://sepolia.etherscan.io/tx/<TRANSACTION_HASH>
+https://sepolia.etherscan.io/address/<CONTRACT_ADDRESS>
+```
+
+### Step 2.2: Standard Deployment (Alternative)
 
 ```bash
 npm run deploy_sepolia
