@@ -1,0 +1,27 @@
+{
+  "name": "hacker",
+  "version": "1.0.0",
+  "description": "The One who Finds",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "coverage": "hardhat coverage",
+    "deploy_sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy_mainnet": "hardhat run scripts/deploy.js --network mainnet",
+    "verify": "hardhat run scripts/verify.js --network sepolia"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://localhost:26831/mhigham47-code/Hacker"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.6.1",
+    "dotenv": "^17.4.2",
+    "hardhat": "^2.29.1"
+  }
+}
