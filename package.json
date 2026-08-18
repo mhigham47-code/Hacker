@@ -9,7 +9,9 @@
     "coverage": "hardhat coverage",
     "deploy_sepolia": "hardhat run scripts/deploy.js --network sepolia",
     "deploy_mainnet": "hardhat run scripts/deploy.js --network mainnet",
-    "verify": "hardhat run scripts/verify.js --network sepolia"
+    "verify": "hardhat run scripts/verify.js --network sepolia",
+    "deploy-sepolia-interactive": "node scripts/deployToSepoliaInteractive.js",
+    "verify-sepolia-setup": "node scripts/verifySepoliaSetup.js"
   },
   "repository": {
     "type": "git",
