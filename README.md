@@ -53,6 +53,11 @@ Tax rates can be adjusted by the owner (capped at 10% buy / 15% sell) or zeroed 
 | `setTax(...)` | Owner | Adjust buy/sell tax breakdown |
 | `setLimits(maxWallet, maxTx)` | Owner | Update anti-whale limits |
 | `removeLimits()` | Owner | Permanently remove transaction/wallet limits |
+| `pause()` / `unpause()` | Owner | Emergency transfer pause control |
+| `setBlacklist(account,bool)` | Owner | Block compromised/bot addresses |
+| `setGreylist(account,bool)` | Owner | Restrict DEX trading for suspicious addresses |
+| `setLiquidityLockUntil(ts)` | Owner | Track LP lock timeline in contract state |
+| `increaseAllowance()` / `decreaseAllowance()` | Holder | Safer allowance management helpers |
 | `claimTeamTokens()` | Anyone | Release vested team tokens to `teamWallet` |
 | `vestedAmount()` | View | Total team tokens vested so far |
 | `renounceOwnership()` | Owner | Give up admin control (irreversible) |
@@ -60,6 +65,11 @@ Tax rates can be adjusted by the owner (capped at 10% buy / 15% sell) or zeroed 
 ---
 
 ## Development Setup
+
+Full guides:
+- [Setup & Sepolia deployment](docs/SETUP.md)
+- [Tokenomics breakdown](docs/TOKENOMICS.md)
+- [Marketing and launch plan](docs/MARKETING.md)
 
 ### Prerequisites
 

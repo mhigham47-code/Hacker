@@ -3,6 +3,9 @@ pragma solidity ^0.8.26;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title Hacker Token
@@ -24,9 +27,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  *   - Max single transaction: 0.5% of total supply
  *   Both limits can be raised/removed by owner after launch.
  */
-contract Hacker is ERC20, Ownable {
+contract Hacker is ERC20, Ownable, Pausable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     // ── Constants ────────────────────────────────────────────────────────────
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000_000 * 10 ** 18;
+    uint256 private constant BPS_DENOMINATOR = 10_000;
 
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
@@ -63,12 +69,21 @@ contract Hacker is ERC20, Ownable {
     /// @notice Addresses excluded from anti-whale limits.
     mapping(address => bool) public isExcludedFromLimits;
 
+    /// @notice Blacklisted addresses cannot transfer or receive tokens.
+    mapping(address => bool) public isBlacklisted;
+
+    /// @notice Greylisted addresses cannot trade against dexPair.
+    mapping(address => bool) public isGreylisted;
+
     // ── Vesting ──────────────────────────────────────────────────────────────
     address public teamWallet;
     uint256 public vestingStart;
     uint256 public vestingDuration = 365 days;
     uint256 public teamAllocation;
     uint256 public teamClaimed;
+
+    /// @notice LP lock metadata tracker (does not lock LP in this contract).
+    uint256 public liquidityLockUntil;
 
     // ── Events ───────────────────────────────────────────────────────────────
     event DexPairUpdated(address indexed newPair);
@@ -79,6 +94,13 @@ contract Hacker is ERC20, Ownable {
         uint256 sellLiq, uint256 sellMkt, uint256 sellBurn
     );
     event TeamTokensClaimed(address indexed to, uint256 amount);
+    event ExcludedFromTaxUpdated(address indexed account, bool excluded);
+    event ExcludedFromLimitsUpdated(address indexed account, bool excluded);
+    event BlacklistUpdated(address indexed account, bool blacklisted);
+    event GreylistUpdated(address indexed account, bool greylisted);
+    event EmergencyPaused(address indexed by);
+    event EmergencyUnpaused(address indexed by);
+    event LiquidityLockUpdated(uint256 unlockTimestamp);
 
     // ── Constructor ──────────────────────────────────────────────────────────
     constructor(
@@ -95,8 +117,8 @@ contract Hacker is ERC20, Ownable {
         liquidityWallet = _liquidityWallet;
 
         // Anti-whale defaults
-        maxWalletAmount = (TOTAL_SUPPLY * 100) / 10_000; // 1%
-        maxTxAmount     = (TOTAL_SUPPLY *  50) / 10_000; // 0.5%
+        maxWalletAmount = (TOTAL_SUPPLY * 100) / BPS_DENOMINATOR; // 1%
+        maxTxAmount     = (TOTAL_SUPPLY *  50) / BPS_DENOMINATOR; // 0.5%
 
         // Exclusions
         isExcludedFromTax[msg.sender]       = true;
@@ -112,11 +134,11 @@ contract Hacker is ERC20, Ownable {
         isExcludedFromLimits[DEAD]             = true;
 
         // Mint and distribute
-        uint256 lpAmount        = (TOTAL_SUPPLY * LP_BPS)        / 10_000;
-        uint256 marketingAmount = (TOTAL_SUPPLY * MARKETING_BPS) / 10_000;
-        uint256 teamAmount      = (TOTAL_SUPPLY * TEAM_BPS)      / 10_000;
-        uint256 burnAmount      = (TOTAL_SUPPLY * BURN_BPS)      / 10_000;
-        uint256 reserveAmount   = (TOTAL_SUPPLY * RESERVE_BPS)   / 10_000;
+        uint256 lpAmount        = (TOTAL_SUPPLY * LP_BPS)        / BPS_DENOMINATOR;
+        uint256 marketingAmount = (TOTAL_SUPPLY * MARKETING_BPS) / BPS_DENOMINATOR;
+        uint256 teamAmount      = (TOTAL_SUPPLY * TEAM_BPS)      / BPS_DENOMINATOR;
+        uint256 burnAmount      = (TOTAL_SUPPLY * BURN_BPS)      / BPS_DENOMINATOR;
+        uint256 reserveAmount   = (TOTAL_SUPPLY * RESERVE_BPS)   / BPS_DENOMINATOR;
 
         teamAllocation = teamAmount;
         vestingStart   = block.timestamp;
@@ -133,7 +155,17 @@ contract Hacker is ERC20, Ownable {
     /**
      * @dev Override ERC-20 transfer to apply tax and anti-whale checks.
      */
-    function _update(address from, address to, uint256 amount) internal override {
+    function _update(address from, address to, uint256 amount) internal override whenNotPaused {
+        // Mint/Burn paths (used by ERC20 internals) skip account checks.
+        if (from != address(0) && to != address(0)) {
+            require(!isBlacklisted[from] && !isBlacklisted[to], "Hacker: blacklisted");
+        }
+
+        if (dexPair != address(0)) {
+            require(!(isGreylisted[from] && to == dexPair), "Hacker: greylisted sell blocked");
+            require(!(isGreylisted[to] && from == dexPair), "Hacker: greylisted buy blocked");
+        }
+
         // Anti-whale: skip for excluded addresses
         if (!isExcludedFromLimits[from] && !isExcludedFromLimits[to]) {
             require(amount <= maxTxAmount, "Hacker: exceeds max transaction");
@@ -155,13 +187,22 @@ contract Hacker is ERC20, Ownable {
                 uint256 liqBps     = isBuy ? buyLiquidityBps  : sellLiquidityBps;
                 uint256 mktBps     = isBuy ? buyMarketingBps  : sellMarketingBps;
                 uint256 burnBps_   = isBuy ? buyBurnBps       : sellBurnBps;
+                uint256 totalBps   = liqBps + mktBps + burnBps_;
 
-                uint256 liqFee  = (amount * liqBps)   / 10_000;
-                uint256 mktFee  = (amount * mktBps)   / 10_000;
-                uint256 burnFee = (amount * burnBps_)  / 10_000;
+                if (totalBps == 0) {
+                    super._update(from, to, amount);
+                    return;
+                }
+
+                uint256 liqFee  = (amount * liqBps)   / BPS_DENOMINATOR;
+                uint256 mktFee  = (amount * mktBps)   / BPS_DENOMINATOR;
+                uint256 burnFee = (amount * burnBps_) / BPS_DENOMINATOR;
                 uint256 totalFee = liqFee + mktFee + burnFee;
 
-                uint256 netAmount = amount - totalFee;
+                uint256 netAmount;
+                unchecked {
+                    netAmount = amount - totalFee;
+                }
 
                 super._update(from, liquidityWallet, liqFee);
                 super._update(from, marketingWallet, mktFee);
@@ -179,7 +220,7 @@ contract Hacker is ERC20, Ownable {
     /**
      * @notice Claims vested team tokens. Anyone can call; tokens always go to teamWallet.
      */
-    function claimTeamTokens() external {
+    function claimTeamTokens() external nonReentrant whenNotPaused {
         uint256 claimable = vestedAmount() - teamClaimed;
         require(claimable > 0, "Hacker: nothing to claim");
         teamClaimed += claimable;
@@ -237,10 +278,12 @@ contract Hacker is ERC20, Ownable {
 
     function setExcludedFromTax(address account, bool excluded) external onlyOwner {
         isExcludedFromTax[account] = excluded;
+        emit ExcludedFromTaxUpdated(account, excluded);
     }
 
     function setExcludedFromLimits(address account, bool excluded) external onlyOwner {
         isExcludedFromLimits[account] = excluded;
+        emit ExcludedFromLimitsUpdated(account, excluded);
     }
 
     /// @notice Removes wallet size and transaction limits permanently.
@@ -248,5 +291,53 @@ contract Hacker is ERC20, Ownable {
         maxWalletAmount = TOTAL_SUPPLY;
         maxTxAmount     = TOTAL_SUPPLY;
         emit LimitsUpdated(TOTAL_SUPPLY, TOTAL_SUPPLY);
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+        emit EmergencyPaused(msg.sender);
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+        emit EmergencyUnpaused(msg.sender);
+    }
+
+    function setBlacklist(address account, bool blacklisted) external onlyOwner {
+        isBlacklisted[account] = blacklisted;
+        emit BlacklistUpdated(account, blacklisted);
+    }
+
+    function setGreylist(address account, bool greylisted) external onlyOwner {
+        isGreylisted[account] = greylisted;
+        emit GreylistUpdated(account, greylisted);
+    }
+
+    function setLiquidityLockUntil(uint256 unlockTimestamp) external onlyOwner {
+        require(unlockTimestamp > block.timestamp, "Hacker: invalid unlock");
+        require(unlockTimestamp >= liquidityLockUntil, "Hacker: cannot shorten lock");
+        liquidityLockUntil = unlockTimestamp;
+        emit LiquidityLockUpdated(unlockTimestamp);
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) external returns (bool) {
+        _approve(msg.sender, spender, allowance(msg.sender, spender) + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool) {
+        uint256 currentAllowance = allowance(msg.sender, spender);
+        require(currentAllowance >= subtractedValue, "Hacker: decreased allowance below zero");
+        unchecked {
+            _approve(msg.sender, spender, currentAllowance - subtractedValue);
+        }
+        return true;
+    }
+
+    /// @notice Rescue non-HACK tokens sent to this contract by mistake.
+    function rescueForeignToken(address token, address to, uint256 amount) external onlyOwner nonReentrant {
+        require(token != address(this), "Hacker: cannot rescue HACK");
+        require(to != address(0), "Hacker: zero address");
+        IERC20(token).safeTransfer(to, amount);
     }
 }

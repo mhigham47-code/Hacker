@@ -268,5 +268,78 @@ describe("Hacker Token", function () {
         hacker.connect(owner).setTax(400, 400, 300, 400, 400, 300)
       ).to.be.reverted;
     });
+
+    it("sets liquidity lock timestamp and disallows shortening", async function () {
+      const now = await time.latest();
+      const lock1 = now + 7 * 24 * 60 * 60;
+      const lock2 = now + 14 * 24 * 60 * 60;
+      await hacker.connect(owner).setLiquidityLockUntil(lock1);
+      expect(await hacker.liquidityLockUntil()).to.equal(lock1);
+
+      await expect(
+        hacker.connect(owner).setLiquidityLockUntil(lock1 - 1)
+      ).to.be.revertedWith("Hacker: cannot shorten lock");
+
+      await hacker.connect(owner).setLiquidityLockUntil(lock2);
+      expect(await hacker.liquidityLockUntil()).to.equal(lock2);
+    });
+  });
+
+  describe("Pause and protection lists", function () {
+    it("pauses and unpauses transfers", async function () {
+      const amount = ethers.parseEther("100");
+      await hacker.connect(owner).pause();
+      await expect(
+        hacker.connect(owner).transfer(alice.address, amount)
+      ).to.be.revertedWithCustomError(hacker, "EnforcedPause");
+
+      await hacker.connect(owner).unpause();
+      await expect(hacker.connect(owner).transfer(alice.address, amount)).to.not.be
+        .reverted;
+    });
+
+    it("blocks blacklisted sender and recipient", async function () {
+      const amount = ethers.parseEther("100");
+      await hacker.connect(owner).transfer(alice.address, amount);
+      await hacker.connect(owner).setBlacklist(alice.address, true);
+      await expect(
+        hacker.connect(alice).transfer(bob.address, 1n)
+      ).to.be.revertedWith("Hacker: blacklisted");
+
+      await hacker.connect(owner).setBlacklist(alice.address, false);
+      await hacker.connect(owner).setBlacklist(bob.address, true);
+      await expect(
+        hacker.connect(alice).transfer(bob.address, 1n)
+      ).to.be.revertedWith("Hacker: blacklisted");
+    });
+
+    it("blocks greylisted dex buys and sells only", async function () {
+      const amount = ethers.parseEther("1000");
+      await hacker.connect(owner).setDexPair(dex.address);
+      await hacker.connect(owner).transfer(alice.address, amount);
+      await hacker.connect(owner).setGreylist(alice.address, true);
+
+      await expect(
+        hacker.connect(alice).transfer(dex.address, 1n)
+      ).to.be.revertedWith("Hacker: greylisted sell blocked");
+
+      await hacker.connect(alice).transfer(bob.address, 1n);
+    });
+  });
+
+  describe("Allowance helpers", function () {
+    it("increases and decreases allowance", async function () {
+      await hacker.connect(owner).increaseAllowance(alice.address, 100n);
+      expect(await hacker.allowance(owner.address, alice.address)).to.equal(100n);
+
+      await hacker.connect(owner).decreaseAllowance(alice.address, 40n);
+      expect(await hacker.allowance(owner.address, alice.address)).to.equal(60n);
+    });
+
+    it("reverts decreasing allowance below zero", async function () {
+      await expect(
+        hacker.connect(owner).decreaseAllowance(alice.address, 1n)
+      ).to.be.revertedWith("Hacker: decreased allowance below zero");
+    });
   });
 });
