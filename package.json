@@ -9,7 +9,8 @@
     "coverage": "hardhat coverage",
     "deploy_sepolia": "hardhat run scripts/deploy.js --network sepolia",
     "deploy_mainnet": "hardhat run scripts/deploy.js --network mainnet",
-    "verify": "hardhat run scripts/verify.js --network sepolia"
+    "verify": "hardhat run scripts/verify.js --network sepolia",
+    "alpaca:buy": "node scripts/alpaca-buy.js"
   },
   "repository": {
     "type": "git",

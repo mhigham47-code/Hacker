@@ -1,0 +1,28 @@
+name: Alpaca Buy Order
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Ticker symbol to buy'
+        required: true
+        default: 'TSLA'
+      qty:
+        description: 'Quantity of shares'
+        required: true
+        default: '1'
+
+jobs:
+  buy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: node scripts/alpaca-buy.js "${{ github.event.inputs.symbol }}" "${{ github.event.inputs.qty }}"
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
