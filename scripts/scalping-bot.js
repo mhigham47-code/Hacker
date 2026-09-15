@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 // EMA-crossover scalping bot for BTC/USD and ETH/USD on Alpaca.
 //
-// Strategy: on each poll, compute a fast and slow EMA from recent 1-minute
-// bars per symbol. A fast-over-slow cross opens a position; the position is
-// closed on a take-profit, a stop-loss, or the fast EMA crossing back below
-// the slow EMA — whichever comes first.
+// Strategy: on each poll, sample the latest trade price per symbol and update
+// a fast/slow EMA incrementally in memory. A fast-over-slow cross opens a
+// position; the position is closed on a take-profit, a stop-loss, or the
+// fast EMA crossing back below the slow EMA — whichever comes first.
+//
+// This samples the live "latest trade" endpoint rather than Alpaca's 1-minute
+// bars endpoint: on some data plans, crypto bars can lag by hours while the
+// latest-trade price stays real-time, which would otherwise make the bot
+// trade on stale prices without any error being raised.
 //
 // Safety: runs against Alpaca's PAPER endpoint unless ALPACA_BASE_URL is
 // overridden AND ALLOW_LIVE_TRADING=true is set explicitly. Never trades
@@ -18,8 +23,6 @@ require('dotenv').config();
 
 const CONFIG = {
   symbols: ['BTC/USD', 'ETH/USD'],
-  timeframe: '1Min',
-  barsLookback: 50,
   fastEmaPeriod: 5,
   slowEmaPeriod: 20,
   takeProfitPct: Number(process.env.SCALPER_TAKE_PROFIT_PCT || 0.006), // 0.6%
@@ -74,31 +77,43 @@ async function parseJsonResponse(res) {
   }
 }
 
-function ema(values, period) {
-  const k = 2 / (period + 1);
-  let emaVal = values[0];
-  for (let i = 1; i < values.length; i++) {
-    emaVal = values[i] * k + emaVal * (1 - k);
+// Per-symbol EMA state, updated incrementally as live prices are sampled
+// (rather than recomputed from historical bars on every poll).
+const emaState = new Map();
+
+function updateEma(symbol, price) {
+  const fastK = 2 / (CONFIG.fastEmaPeriod + 1);
+  const slowK = 2 / (CONFIG.slowEmaPeriod + 1);
+  const state = emaState.get(symbol);
+
+  if (!state) {
+    const fresh = { fastEma: price, slowEma: price, prevFastEma: null, prevSlowEma: null, samples: 1 };
+    emaState.set(symbol, fresh);
+    return fresh;
   }
-  return emaVal;
+
+  state.prevFastEma = state.fastEma;
+  state.prevSlowEma = state.slowEma;
+  state.fastEma = price * fastK + state.fastEma * (1 - fastK);
+  state.slowEma = price * slowK + state.slowEma * (1 - slowK);
+  state.samples += 1;
+  return state;
 }
 
-// Fetched one symbol at a time: requesting multiple symbols in a single call
-// paginates across symbols (via next_page_token) rather than returning all of
-// them together, so a multi-symbol request silently drops everything but the
-// first symbol unless that pagination is followed.
-async function fetchBars(symbol) {
-  const url = new URL(`${DATA_BASE_URL}/v1beta3/crypto/us/bars`);
+async function fetchLatestPrice(symbol) {
+  const url = new URL(`${DATA_BASE_URL}/v1beta3/crypto/us/latest/trades`);
   url.searchParams.set('symbols', symbol);
-  url.searchParams.set('timeframe', CONFIG.timeframe);
-  url.searchParams.set('limit', String(CONFIG.barsLookback));
 
   const res = await fetch(url, { headers });
   const body = await parseJsonResponse(res);
   if (!res.ok) {
-    throw new Error(`Failed to fetch bars: ${res.status} ${JSON.stringify(body)}`);
+    throw new Error(`Failed to fetch latest trade: ${res.status} ${JSON.stringify(body)}`);
   }
-  return (body.bars && body.bars[symbol]) || [];
+  const trade = body.trades && body.trades[symbol];
+  if (!trade) {
+    throw new Error(`No trade data returned for ${symbol}`);
+  }
+  return trade.p;
 }
 
 // Alpaca's crypto position symbols drop the "/" (e.g. "BTC/USD" -> "BTCUSD").
@@ -137,21 +152,15 @@ async function submitOrder(symbol, side, { notional, qty } = {}) {
   return body;
 }
 
-async function evaluateSymbol(symbol, bars) {
-  if (!bars || bars.length < CONFIG.slowEmaPeriod + 1) {
-    console.log(`[${symbol}] not enough bars yet (${bars ? bars.length : 0}), skipping.`);
+async function evaluateSymbol(symbol, price) {
+  const state = updateEma(symbol, price);
+
+  if (state.samples <= CONFIG.slowEmaPeriod || state.prevFastEma === null) {
+    console.log(`[${symbol}] warming up EMA (${state.samples}/${CONFIG.slowEmaPeriod} samples). price=$${price.toFixed(2)}`);
     return;
   }
 
-  const closes = bars.map((b) => b.c);
-  const prevCloses = closes.slice(0, -1);
-  const lastPrice = closes[closes.length - 1];
-
-  const fastEma = ema(closes.slice(-CONFIG.fastEmaPeriod - 1), CONFIG.fastEmaPeriod);
-  const slowEma = ema(closes.slice(-CONFIG.slowEmaPeriod - 1), CONFIG.slowEmaPeriod);
-  const prevFastEma = ema(prevCloses.slice(-CONFIG.fastEmaPeriod - 1), CONFIG.fastEmaPeriod);
-  const prevSlowEma = ema(prevCloses.slice(-CONFIG.slowEmaPeriod - 1), CONFIG.slowEmaPeriod);
-
+  const { fastEma, slowEma, prevFastEma, prevSlowEma } = state;
   const bullishCross = prevFastEma <= prevSlowEma && fastEma > slowEma;
   const bearishCross = prevFastEma >= prevSlowEma && fastEma < slowEma;
 
@@ -159,17 +168,17 @@ async function evaluateSymbol(symbol, bars) {
 
   if (!position) {
     if (bullishCross) {
-      console.log(`[${symbol}] bullish EMA cross @ $${lastPrice.toFixed(2)} — opening $${CONFIG.positionUsd} position.`);
+      console.log(`[${symbol}] bullish EMA cross @ $${price.toFixed(2)} — opening $${CONFIG.positionUsd} position.`);
       const order = await submitOrder(symbol, 'buy', { notional: CONFIG.positionUsd });
       console.log(`[${symbol}] buy order submitted: id=${order.id} status=${order.status}`);
     } else {
-      console.log(`[${symbol}] flat, no signal. price=$${lastPrice.toFixed(2)} fastEma=${fastEma.toFixed(2)} slowEma=${slowEma.toFixed(2)}`);
+      console.log(`[${symbol}] flat, no signal. price=$${price.toFixed(2)} fastEma=${fastEma.toFixed(2)} slowEma=${slowEma.toFixed(2)}`);
     }
     return;
   }
 
   const entryPrice = Number(position.avg_entry_price);
-  const changePct = (lastPrice - entryPrice) / entryPrice;
+  const changePct = (price - entryPrice) / entryPrice;
   const qty = position.qty;
 
   const hitTakeProfit = changePct >= CONFIG.takeProfitPct;
@@ -177,19 +186,19 @@ async function evaluateSymbol(symbol, bars) {
 
   if (hitTakeProfit || hitStopLoss || bearishCross) {
     const reason = hitTakeProfit ? 'take-profit' : hitStopLoss ? 'stop-loss' : 'bearish EMA cross';
-    console.log(`[${symbol}] closing position (${reason}): entry=$${entryPrice.toFixed(2)} last=$${lastPrice.toFixed(2)} change=${(changePct * 100).toFixed(2)}%`);
+    console.log(`[${symbol}] closing position (${reason}): entry=$${entryPrice.toFixed(2)} last=$${price.toFixed(2)} change=${(changePct * 100).toFixed(2)}%`);
     const order = await submitOrder(symbol, 'sell', { qty });
     console.log(`[${symbol}] sell order submitted: id=${order.id} status=${order.status}`);
   } else {
-    console.log(`[${symbol}] holding position. entry=$${entryPrice.toFixed(2)} last=$${lastPrice.toFixed(2)} change=${(changePct * 100).toFixed(2)}%`);
+    console.log(`[${symbol}] holding position. entry=$${entryPrice.toFixed(2)} last=$${price.toFixed(2)} change=${(changePct * 100).toFixed(2)}%`);
   }
 }
 
 async function pollOnce() {
   for (const symbol of CONFIG.symbols) {
     try {
-      const bars = await fetchBars(symbol);
-      await evaluateSymbol(symbol, bars);
+      const price = await fetchLatestPrice(symbol);
+      await evaluateSymbol(symbol, price);
     } catch (err) {
       console.error(`[${symbol}] error during evaluation:`, err.message);
     }
@@ -200,7 +209,7 @@ async function main() {
   assertConfigured();
 
   console.log(`Scalping bot starting — ${IS_PAPER ? 'PAPER' : 'LIVE'} trading on ${TRADING_BASE_URL}`);
-  console.log(`Symbols: ${CONFIG.symbols.join(', ')} | timeframe=${CONFIG.timeframe} | fastEMA=${CONFIG.fastEmaPeriod} slowEMA=${CONFIG.slowEmaPeriod}`);
+  console.log(`Symbols: ${CONFIG.symbols.join(', ')} | polling live trade price every ${CONFIG.pollIntervalMs / 1000}s | fastEMA=${CONFIG.fastEmaPeriod} slowEMA=${CONFIG.slowEmaPeriod} samples`);
   console.log(`Position size: $${CONFIG.positionUsd} | take-profit=${(CONFIG.takeProfitPct * 100).toFixed(2)}% stop-loss=${(CONFIG.stopLossPct * 100).toFixed(2)}%`);
 
   const runOnce = process.argv.includes('--once');
