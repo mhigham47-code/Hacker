@@ -83,9 +83,13 @@ function ema(values, period) {
   return emaVal;
 }
 
-async function fetchBars(symbols) {
+// Fetched one symbol at a time: requesting multiple symbols in a single call
+// paginates across symbols (via next_page_token) rather than returning all of
+// them together, so a multi-symbol request silently drops everything but the
+// first symbol unless that pagination is followed.
+async function fetchBars(symbol) {
   const url = new URL(`${DATA_BASE_URL}/v1beta3/crypto/us/bars`);
-  url.searchParams.set('symbols', symbols.join(','));
+  url.searchParams.set('symbols', symbol);
   url.searchParams.set('timeframe', CONFIG.timeframe);
   url.searchParams.set('limit', String(CONFIG.barsLookback));
 
@@ -94,7 +98,7 @@ async function fetchBars(symbols) {
   if (!res.ok) {
     throw new Error(`Failed to fetch bars: ${res.status} ${JSON.stringify(body)}`);
   }
-  return body.bars || {};
+  return (body.bars && body.bars[symbol]) || [];
 }
 
 // Alpaca's crypto position symbols drop the "/" (e.g. "BTC/USD" -> "BTCUSD").
@@ -182,10 +186,10 @@ async function evaluateSymbol(symbol, bars) {
 }
 
 async function pollOnce() {
-  const bars = await fetchBars(CONFIG.symbols);
   for (const symbol of CONFIG.symbols) {
     try {
-      await evaluateSymbol(symbol, bars[symbol]);
+      const bars = await fetchBars(symbol);
+      await evaluateSymbol(symbol, bars);
     } catch (err) {
       console.error(`[${symbol}] error during evaluation:`, err.message);
     }
