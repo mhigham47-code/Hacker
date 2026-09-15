@@ -28,8 +28,10 @@ const CONFIG = {
   pollIntervalMs: Number(process.env.SCALPER_POLL_INTERVAL_MS || 30_000),
 };
 
-const API_KEY = process.env.ALPACA_API_KEY_ID;
-const API_SECRET = process.env.ALPACA_API_SECRET_KEY;
+// .trim() guards against a stray trailing space/newline from copy-pasting the
+// key, which produces an invalid header value and a confusing non-JSON response.
+const API_KEY = process.env.ALPACA_API_KEY_ID?.trim();
+const API_SECRET = process.env.ALPACA_API_SECRET_KEY?.trim();
 const TRADING_BASE_URL = process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
 const DATA_BASE_URL = 'https://data.alpaca.markets';
 const IS_PAPER = TRADING_BASE_URL.includes('paper');
@@ -60,6 +62,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Alpaca normally returns JSON, but a proxy, WAF, or malformed request can
+// return an HTML/plain-text error page instead. Surface that raw body
+// (truncated) instead of letting JSON.parse throw an opaque SyntaxError.
+async function parseJsonResponse(res) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Non-JSON response (HTTP ${res.status} ${res.statusText}): ${text.slice(0, 300)}`);
+  }
+}
+
 function ema(values, period) {
   const k = 2 / (period + 1);
   let emaVal = values[0];
@@ -76,7 +90,7 @@ async function fetchBars(symbols) {
   url.searchParams.set('limit', String(CONFIG.barsLookback));
 
   const res = await fetch(url, { headers });
-  const body = await res.json();
+  const body = await parseJsonResponse(res);
   if (!res.ok) {
     throw new Error(`Failed to fetch bars: ${res.status} ${JSON.stringify(body)}`);
   }
@@ -91,7 +105,7 @@ function positionSymbol(symbol) {
 async function getOpenPosition(symbol) {
   const res = await fetch(`${TRADING_BASE_URL}/v2/positions/${positionSymbol(symbol)}`, { headers });
   if (res.status === 404) return null;
-  const body = await res.json();
+  const body = await parseJsonResponse(res);
   if (!res.ok) {
     throw new Error(`Failed to fetch position for ${symbol}: ${res.status} ${JSON.stringify(body)}`);
   }
@@ -112,7 +126,7 @@ async function submitOrder(symbol, side, { notional, qty } = {}) {
     headers,
     body: JSON.stringify(order),
   });
-  const body = await res.json();
+  const body = await parseJsonResponse(res);
   if (!res.ok) {
     throw new Error(`Order failed for ${symbol}: ${res.status} ${JSON.stringify(body)}`);
   }
