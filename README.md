@@ -128,6 +128,40 @@ npm run deploy_mainnet
 
 ---
 
+## Scalping Bot (BTC/ETH)
+
+`scripts/scalping-bot.js` is a simple EMA-crossover scalping bot for `BTC/USD` and
+`ETH/USD`, built on the same Alpaca API used by `scripts/alpaca-buy.js`.
+
+**Strategy:** polls 1-minute bars on an interval and computes a fast (5) and slow
+(20) EMA per symbol. A bullish crossover opens a position sized at
+`SCALPER_POSITION_USD`; the position is closed on whichever comes first: a
+take-profit (`SCALPER_TAKE_PROFIT_PCT`), a stop-loss (`SCALPER_STOP_LOSS_PCT`), or
+the fast EMA crossing back below the slow EMA.
+
+### Run it
+
+```bash
+cp .env.example .env
+# fill in ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY (paper keys from alpaca.markets)
+
+npm run scalp:once   # single poll, useful for testing your config
+npm run scalp        # runs continuously until Ctrl-C
+```
+
+### Safety
+
+- **Defaults to Alpaca's paper endpoint.** The bot refuses to place real orders
+  unless `ALPACA_BASE_URL` points at the live API **and** `ALLOW_LIVE_TRADING=true`
+  is set explicitly in `.env`.
+- This is a basic, educational strategy — it is not risk-managed for real capital.
+  Backtest and paper-trade extensively before ever considering live use, and only
+  ever risk money you can afford to lose.
+- Tune position size, take-profit/stop-loss, and poll interval via the
+  `SCALPER_*` environment variables (see `.env.example`).
+
+---
+
 ## Security Considerations
 
 - **Audit required** before mainnet launch. Never deploy an unaudited token with real funds.
