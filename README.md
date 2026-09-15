@@ -133,11 +133,14 @@ npm run deploy_mainnet
 `scripts/scalping-bot.js` is a simple EMA-crossover scalping bot for `BTC/USD` and
 `ETH/USD`, built on the same Alpaca API used by `scripts/alpaca-buy.js`.
 
-**Strategy:** polls 1-minute bars on an interval and computes a fast (5) and slow
-(20) EMA per symbol. A bullish crossover opens a position sized at
+**Strategy:** samples the live trade price every `SCALPER_POLL_INTERVAL_MS` and
+updates a fast (5) and slow (20) EMA in memory (Alpaca's historical bars endpoint
+can lag by hours on some data plans, so the bot uses the real-time latest-trade
+price instead). A bullish crossover opens a position sized at
 `SCALPER_POSITION_USD`; the position is closed on whichever comes first: a
 take-profit (`SCALPER_TAKE_PROFIT_PCT`), a stop-loss (`SCALPER_STOP_LOSS_PCT`), or
-the fast EMA crossing back below the slow EMA.
+the fast EMA crossing back below the slow EMA. The EMAs need ~20 polls (about
+10 minutes at the default interval) to warm up before the bot will trade.
 
 ### Run it
 
