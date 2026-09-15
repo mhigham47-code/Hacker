@@ -10,7 +10,9 @@
     "deploy_sepolia": "hardhat run scripts/deploy.js --network sepolia",
     "deploy_mainnet": "hardhat run scripts/deploy.js --network mainnet",
     "verify": "hardhat run scripts/verify.js --network sepolia",
-    "alpaca:buy": "node scripts/alpaca-buy.js"
+    "alpaca:buy": "node scripts/alpaca-buy.js",
+    "scalp": "node scripts/scalping-bot.js",
+    "scalp:once": "node scripts/scalping-bot.js --once"
   },
   "repository": {
     "type": "git",
