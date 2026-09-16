@@ -35,7 +35,14 @@ const CONFIG = {
 // key, which produces an invalid header value and a confusing non-JSON response.
 const API_KEY = process.env.ALPACA_API_KEY_ID?.trim();
 const API_SECRET = process.env.ALPACA_API_SECRET_KEY?.trim();
-const TRADING_BASE_URL = process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
+// Strip a trailing "/v2" (Alpaca's own dashboard displays the endpoint with
+// it included, e.g. "https://paper-api.alpaca.markets/v2") since every call
+// below already appends "/v2/..." itself — leaving it in .env would double
+// up to "/v2/v2/..." and 404 on every request.
+const TRADING_BASE_URL = (process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets')
+  .trim()
+  .replace(/\/+$/, '')
+  .replace(/\/v2$/, '');
 const DATA_BASE_URL = 'https://data.alpaca.markets';
 const IS_PAPER = TRADING_BASE_URL.includes('paper');
 const ALLOW_LIVE_TRADING = process.env.ALLOW_LIVE_TRADING === 'true';
